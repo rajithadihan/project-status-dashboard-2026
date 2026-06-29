@@ -1,0 +1,349 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IPD Data Enrichment Dashboard</title>
+<link rel="stylesheet" href="styles.css">
+
+</head>
+<body>
+<div class="app">
+<header class="header"><div class="brand"><div class="logo-box"><img src="ipd.svg" alt="IPD" onerror="this.style.display='none';this.parentElement.innerHTML='IPD';"></div><div><h1>Data Enrichment Live Dashboard</h1><p class="header-note">Live project progress · working-day productivity · engineer, product and forecast analytics</p></div></div><div class="actions"><button class="btn-ghost nav-btn" data-page="summaryPage" onclick="showPage('summaryPage')">Summary</button><button class="btn-ghost nav-btn" data-page="engineerPage" onclick="showPage('engineerPage')">Engineer Performance</button><button class="btn-ghost nav-btn" data-page="productPage" onclick="showPage('productPage')">Product Analytics</button><button class="btn-ghost nav-btn" data-page="forecastPlanningPage" onclick="showPage('forecastPlanningPage')">Forecast Planning</button><button class="btn-ghost nav-btn" data-page="taskPage" onclick="showPage('taskPage')">Recent Tasks</button><button class="btn-primary icon-only" onclick="loadData()" title="Refresh Data" aria-label="Refresh Data">↻</button><button class="btn-ghost" onclick="toggleAutoRefresh()" id="autoRefreshBtn">Auto Refresh: Off</button><button class="btn-ghost" onclick="window.print()">Save PDF</button></div></header>
+<div class="tabs no-print"><span class="tab-note" id="fileInfo">Waiting for data...</span></div>
+<main id="summaryPage" class="page active"><div id="summaryContent" class="loading">Loading data...</div></main>
+<main id="engineerPage" class="page"><div id="engineerContent" class="loading">Loading...</div></main>
+<main id="productPage" class="page"><div id="productContent" class="loading">Loading...</div></main>
+<main id="taskPage" class="page"><div id="taskContent" class="loading">Loading...</div></main>
+<main id="forecastPlanningPage" class="page"><div id="forecastPlanningContent" class="loading">Loading...</div></main>
+</div>
+<script>
+let dashboardData=null;let activePage='summaryPage';let autoRefreshTimer=null;const fmt=n=>new Intl.NumberFormat('en-AU').format(Math.round(Number(n)||0));const pct=n=>`${(Number(n)||0).toFixed(1)}%`;function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}function statusClass(p){p=Number(p)||0;return p>=80?'status-ok':p>=40?'status-watch':'status-risk'}function dateShort(s){if(!s)return'-';const d=new Date(s);if(isNaN(d))return s;return d.toLocaleDateString('en-AU',{day:'2-digit',month:'short'});}function rateText(v){return v===null||v===undefined||Number.isNaN(Number(v))?'-':Number(v).toFixed(1)}function dateFull(s){if(!s)return'-';const d=new Date(s);if(isNaN(d))return s;return d.toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'});}
+
+function setActiveNav(pageId){
+  document.querySelectorAll('.nav-btn').forEach(btn=>{
+    btn.classList.toggle('active', btn.dataset.page === pageId);
+  });
+}
+
+function showPage(id){setActiveNav(id);document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.getElementById(id).classList.add('active');activePage=id;render();}
+async function loadData(){setLoading();try{const res=await fetch('/api/data?ts='+Date.now());const payload=await res.json();if(!payload.ok)throw new Error(payload.error||'Unable to read data');dashboardData=payload.data;render();}catch(e){renderError(e.message)}}
+function setLoading(){document.getElementById('fileInfo').textContent='Refreshing project data...';}
+function renderError(msg){const html=`<div class="error-box"><strong>Dashboard could not read project data.</strong><br>${esc(msg)}<br><br>Make sure Project-status.xlsx is in the same folder and the dashboard was opened using start_dashboard.bat.</div>`;['summaryContent','engineerContent','productContent','taskContent','forecastPlanningContent'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML=html;});document.getElementById('fileInfo').textContent='Error loading data';}
+function toggleAutoRefresh(){const btn=document.getElementById('autoRefreshBtn');if(autoRefreshTimer){clearInterval(autoRefreshTimer);autoRefreshTimer=null;btn.textContent='Auto Refresh: Off';}else{autoRefreshTimer=setInterval(loadData,30000);btn.textContent='Auto Refresh: On';}}
+function render(){if(!dashboardData)return;document.getElementById('fileInfo').textContent=`Last refreshed: ${new Date(dashboardData.metadata.generatedAt).toLocaleString()} | Dashboard updated: ${new Date(dashboardData.metadata.excelModified).toLocaleString()}`;if(activePage==='summaryPage')renderSummary();if(activePage==='engineerPage')renderEngineers();if(activePage==='productPage')renderProductAnalytics();if(activePage==='forecastPlanningPage')renderForecastPlanning();if(activePage==='taskPage')renderTasks();}
+function kpiCards(){const o=dashboardData.overview;return `<div class="kpis"><div class="hero"><small>Overall Completion</small><strong>${pct(o.completionPct)}</strong><span>${fmt(o.completed)} completed of ${fmt(o.total)}</span></div><div class="metric cyan"><small>Total Scope</small><strong>${fmt(o.total)}</strong><span>project product scope</span></div><div class="metric green"><small>Completed</small><strong>${fmt(o.completed)}</strong><span>unique completed products</span></div><div class="metric red"><small>Remaining</small><strong>${fmt(o.remaining)}</strong><span>still to complete</span></div><div class="metric amber"><small>Actual Team Rate</small><strong>${o.actualDailyRate.toFixed(1)}/day</strong><span>${fmt(o.teamWorkingDays)} working days</span></div><div class="metric purple"><small>Latest Day</small><strong>${fmt(o.latestDayCount)}</strong><span>${o.lastWorkDate||'-'}</span></div></div>`}
+
+function balanceIfCurrentPlan(){
+  const f=dashboardData.forecast||{};
+  const o=dashboardData.overview||{};
+  const projected=(f.projectedCumulative||[]).filter(v=>v!==null&&v!==undefined);
+  const projectedAtDeadline=projected.length?Number(projected[projected.length-1]):Number(o.completed||0);
+  return Math.max(0, Number(o.total||0)-projectedAtDeadline);
+}
+
+function renderSummary(){
+  const o=dashboardData.overview,g=dashboardData.groups,f=dashboardData.forecast;
+  const fStatusClass=f.statusClass==='safe'?'safe':f.statusClass==='risk'?'risk':'watch';
+  document.getElementById('summaryContent').innerHTML=`<section class="summary-exec-grid">
+    ${kpiCards()}
+
+    <div class="summary-top-grid">
+      <div class="card panel summary-project-progress">
+        <div class="section-title"><h2>Project Progress</h2><span>Completed vs Remaining</span></div>
+        <div class="donut-wrap"><div class="donut" id="overallDonut"><span>${pct(o.completionPct)}</span></div><div class="grid"><div class="summary-item">Total project scope is <strong>${fmt(o.total)}</strong> products.</div><div class="summary-item"><strong>${fmt(o.completed)}</strong> products are currently completed.</div><div class="summary-item"><strong>${fmt(o.remaining)}</strong> products remain open.</div></div></div>
+      </div>
+      <div class="card panel summary-trend-card">
+        <div class="section-title"><h2>Daily Team Trend</h2><span>Every working day shown as a mark</span></div>
+        <div id="teamLine" class="chart"></div>
+      </div>
+    </div>
+
+    <div class="summary-forecast-row">
+      <div class="forecast-hero ${fStatusClass}"><small>Deadline Forecast Status</small><strong>${esc(f.status)}</strong><span>Deadline: 30 Sep 2026<br>Current productivity view</span></div>
+      <div class="metric red balance-deadline-box"><small>Balance Products on Deadline</small><strong>${fmt(balanceIfCurrentPlan())}</strong><span>If current productivity continues to 30 Sep 2026</span></div>
+      <div class="metric cyan"><small>Actual Daily Rate</small><strong>${rateText(f.actualDailyRate)}</strong><span>Products / worked day</span></div>
+      <div class="metric amber"><small>Required Daily Rate</small><strong>${rateText(f.requiredDailyRate)}</strong><span>To meet deadline</span></div>
+      <div class="metric ${f.rateGap&&f.rateGap>0?'red':'green'}"><small>Daily Gap</small><strong>${rateText(f.rateGap)}</strong><span>Required - actual</span></div>
+      <div class="metric"><small>Working Days Left</small><strong>${fmt(f.remainingWorkdaysToDeadline)}</strong><span>Until 30 Sep 2026</span></div>
+      <div class="metric purple"><small>Current Engineers</small><strong>${fmt(f.latestActiveEngineers)}</strong><span>Latest worked day</span></div>
+    </div>
+
+    <div class="summary-forecast-charts">
+      <div class="card panel summary-forecast-chart"><div class="section-title"><h2>Forecast to Deadline</h2><span>Actual vs required path</span></div><div id="summaryForecastLine" class="chart"></div></div>
+      <div class="card panel summary-forecast-chart"><div class="section-title"><h2>Daily Output vs Required Line</h2><span>Working-day output</span></div><div id="summaryDailyVsRequired" class="chart"></div></div>
+    </div>
+
+    <div class="summary-abc-takeaways">
+      <div class="card panel"><div class="section-title"><h2>ABC Class Progress</h2><span>A, B, C, D, Unassigned</span></div>${tableProgress(g.abc,'ABC Class')}</div>
+      <div class="card panel"><div class="section-title"><h2>Key Takeaways</h2><span>Executive view</span></div><div class="key-takeaways">
+        <div class="takeaway-row"><span class="takeaway-dot" style="background:#ef4444"></span><span>Project is ${f.status.toLowerCase()} to meet the 30 Sep 2026 deadline.</span></div>
+        <div class="takeaway-row"><span class="takeaway-dot" style="background:#fbbf24"></span><span>${f.rateGap&&f.rateGap>0?`Need to increase output by ${rateText(f.rateGap)} products/day.`:'Current rate is above the required daily rate.'}</span></div>
+        <div class="takeaway-row"><span class="takeaway-dot" style="background:#22d3ee"></span><span>Estimated required engineers: ${fmt(f.requiredEngineers||0)} (currently ${fmt(f.latestActiveEngineers||0)}).</span></div>
+        <div class="takeaway-row"><span class="takeaway-dot" style="background:#34d399"></span><span>Maintain focus on improving daily productivity and closing the remaining ${fmt(o.remaining)} products.</span></div>
+      </div></div>
+    </div>
+  </section>`;
+  setDonut('overallDonut',o.completionPct);
+  lineChart('teamLine',dashboardData.trends.daily.map(x=>x.date),[{name:'Team Daily Completed',values:dashboardData.trends.daily.map(x=>x.completed),color:'#22d3ee'}],{showEveryDate:true});
+  lineChart('summaryForecastLine',f.dates,[{name:'Actual cumulative',values:f.actualCumulative.map(v=>v===null?null:v),color:'#22d3ee'},{name:'Required path',values:f.targetCumulative.map(v=>v===null?null:v),color:'#fbbf24'},{name:'Current-rate projection',values:f.projectedCumulative.map(v=>v===null?null:v),color:'#a78bfa'}],{showEveryDate:true,legend:true,compact:true});
+  lineChart('summaryDailyVsRequired',f.elapsedDates,[{name:'Actual daily output',values:f.elapsedDailyCompleted,color:'#22d3ee'},{name:'Required daily average',values:f.requiredDailyLine,color:'#fbbf24'}],{showEveryDate:true,legend:true,compact:true});
+}
+function renderEngineers(){const e=dashboardData.engineers;document.getElementById('engineerContent').innerHTML=`<section class="grid">${kpiCards()}<div class="bottom-grid"><div class="card panel"><div class="section-title"><h2>Team Daily Performance</h2><span>Every working day included, zero if no output</span></div><div id="engTeamLine" class="chart"></div></div><div class="card panel"><div class="section-title"><h2>Engineer Contribution</h2><span>Total completed by engineer</span></div><div id="engBar" class="chart"></div></div></div><div class="card panel"><div class="section-title"><h2>Engineer Performance Summary</h2><span>Actual rate based on worked days</span></div><div class="table-wrap"><table><thead><tr><th>Engineer</th><th>Completed</th><th>Worked Days</th><th>Avg / Worked Day</th><th>Contribution</th><th>Progress</th></tr></thead><tbody>${e.summary.map(r=>`<tr><td><strong>${esc(r.engineer)}</strong></td><td>${fmt(r.completed)}</td><td>${fmt(r.workedDays)}</td><td>${r.avgPerWorkedDay.toFixed(1)}</td><td>${pct(r.sharePct)}</td><td class="progress-cell"><div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100,r.sharePct)}%"></div></div></td></tr>`).join('')}</tbody></table></div></div><div class="card panel"><div class="section-title"><h2>Individual Daily Trend</h2><span>Legend shows engineer color reference</span></div><div id="engMultiLine" class="chart tall"></div></div></section>`;lineChart('engTeamLine',dashboardData.trends.daily.map(x=>x.date),[{name:'Team Daily Completed',values:dashboardData.trends.daily.map(x=>x.completed),color:'#22d3ee'}],{showEveryDate:true});barChart('engBar',e.summary.map(x=>x.engineer),e.summary.map(x=>x.completed),'#22d3ee');const colors=['#22d3ee','#ef4444','#34d399','#fbbf24','#a78bfa','#38bdf8','#fb7185','#14b8a6'];lineChart('engMultiLine',dashboardData.workingDays.dates,e.dailySeries.map((s,i)=>({name:s.engineer,values:s.values.map(v=>v.completed),color:colors[i%colors.length]})),{showEveryDate:true,legend:true});}
+function renderProductAnalytics(){const g=dashboardData.groups;document.getElementById('productContent').innerHTML=`<section class="grid">${kpiCards()}<div class="bottom-grid"><div class="card panel"><div class="section-title"><h2>Product Manager Status</h2><span>Completion by owner</span></div>${tableProgress(g.productManager,'Product Manager',30)}</div><div class="card panel"><div class="section-title"><h2>Category Status</h2><span>Expand Category → Class → Stock Group</span></div>${categoryTreeTable(g.categoryTree||[])}</div></div></section>`;}
+function renderForecast(){const f=dashboardData.forecast,o=dashboardData.overview;const statusClass=f.statusClass==='safe'?'safe':f.statusClass==='risk'?'risk':'watch';document.getElementById('forecastContent').innerHTML=`<section class="grid forecast-onepage"><div class="forecast-compact-top"><div class="forecast-hero compact ${statusClass}"><small>Deadline Forecast Status</small><strong>${esc(f.status)}</strong><span>Deadline: 30 Sep 2026 · Current productivity view</span></div><div class="suggestion-card compact"><strong>Balance Products on Deadline</strong><br>If current productivity continues, projected balance on deadline: ${fmt(balanceIfCurrentPlan())} products</div></div><div class="forecast-metrics-compact"><div class="metric cyan"><small>Actual Daily Rate</small><strong>${rateText(f.actualDailyRate)}</strong><span>Products / worked day</span></div><div class="metric amber"><small>Required Daily Rate</small><strong>${rateText(f.requiredDailyRate)}</strong><span>To meet deadline</span></div><div class="metric ${f.rateGap&&f.rateGap>0?'red':'green'}"><small>Daily Gap</small><strong>${rateText(f.rateGap)}</strong><span>Required - actual</span></div><div class="metric"><small>Working Days Left</small><strong>${fmt(f.remainingWorkdaysToDeadline)}</strong><span>Until 30 Sep 2026</span></div><div class="metric purple"><small>Current Engineers</small><strong>${fmt(f.latestActiveEngineers)}</strong><span>Latest worked day</span></div></div><div class="forecast-charts-compact"><div class="card panel forecast-chart-small"><div class="section-title"><h2>Forecast to Deadline</h2><span>Actual vs required path</span></div><div id="forecastLine" class="chart"></div></div><div class="card panel forecast-chart-small"><div class="section-title"><h2>Daily Output vs Required Line</h2><span>Working-day output</span></div><div id="dailyVsRequired" class="chart"></div></div></div></section>`;lineChart('forecastLine',f.dates,[{name:'Actual cumulative',values:f.actualCumulative.map(v=>v===null?null:v),color:'#22d3ee'},{name:'Required path',values:f.targetCumulative.map(v=>v===null?null:v),color:'#fbbf24'},{name:'Current-rate projection',values:f.projectedCumulative.map(v=>v===null?null:v),color:'#a78bfa'}],{showEveryDate:true,legend:true,compact:true});lineChart('dailyVsRequired',f.elapsedDates,[{name:'Actual daily output',values:f.elapsedDailyCompleted,color:'#22d3ee'},{name:'Required daily average',values:f.requiredDailyLine,color:'#fbbf24'}],{showEveryDate:true,legend:true,compact:true});}
+
+
+
+let forecastPlanRows = JSON.parse(localStorage.getItem('ipdForecastPlanRowsV15') || '[]');
+
+function saveForecastPlanRows(){
+  localStorage.setItem('ipdForecastPlanRowsV15', JSON.stringify(forecastPlanRows));
+}
+
+function addPlanRow(){
+  forecastPlanRows.push({from:'',to:'',perDay:0});
+  saveForecastPlanRows();
+  renderForecastPlanning();
+}
+
+function deletePlanRow(i){
+  forecastPlanRows.splice(i,1);
+  saveForecastPlanRows();
+  renderForecastPlanning();
+}
+
+function updatePlanRow(i, field, value){
+  if(!forecastPlanRows[i]) return;
+  forecastPlanRows[i][field] = field === 'perDay' ? (Number(value)||0) : value;
+  saveForecastPlanRows();
+  renderForecastPlanning();
+}
+
+function additionalOutputForDate(date){
+  // Each row is ONE ADDITIONAL engineer/resource.
+  // This output is added on top of the current actual team rate.
+  return forecastPlanRows.reduce((sum,row)=>{
+    if(!row.from || !row.to) return sum;
+    if(date >= row.from && date <= row.to) return sum + (Number(row.perDay)||0);
+    return sum;
+  },0);
+}
+
+function buildForecastPlanningScenario(){
+  const f = dashboardData.forecast || {};
+  const o = dashboardData.overview || {};
+  const futureDates = (f.dates || []).filter(d => !f.latestDate || d > f.latestDate);
+  const total = Number(o.total) || 0;
+  const completed = Number(o.completed) || 0;
+  const currentRate = Number(f.actualDailyRate) || 0;
+
+  let cumulative = completed;
+  let completionDate = null;
+
+  const additionalDaily = [];
+  const combinedDaily = [];
+  const plannedCumulative = [];
+  const requiredLine = [];
+  const currentLine = [];
+
+  futureDates.forEach(d=>{
+    const extra = additionalOutputForDate(d);
+    const combined = currentRate + extra;
+
+    additionalDaily.push(extra);
+    combinedDaily.push(combined);
+    requiredLine.push(Number(f.requiredDailyRate)||0);
+    currentLine.push(currentRate);
+
+    cumulative = Math.min(total, cumulative + combined);
+    plannedCumulative.push(cumulative);
+    if(!completionDate && cumulative >= total) completionDate = d;
+  });
+
+  const avgAdditional = additionalDaily.length ? additionalDaily.reduce((a,b)=>a+b,0)/additionalDaily.length : 0;
+  const avgCombined = combinedDaily.length ? combinedDaily.reduce((a,b)=>a+b,0)/combinedDaily.length : currentRate;
+  const projectedAtDeadline = plannedCumulative.length ? plannedCumulative[plannedCumulative.length-1] : completed;
+  const remainingAtDeadline = Math.max(total - projectedAtDeadline, 0);
+  const achievable = projectedAtDeadline >= total;
+
+  return {
+    futureDates,
+    currentRate,
+    additionalDaily,
+    combinedDaily,
+    plannedCumulative,
+    requiredLine,
+    currentLine,
+    avgAdditional,
+    avgCombined,
+    projectedAtDeadline,
+    remainingAtDeadline,
+    achievable,
+    completionDate
+  };
+}
+
+function renderForecastPlanning(){
+  const f = dashboardData.forecast || {};
+  const s = buildForecastPlanningScenario();
+  const status = forecastPlanRows.length === 0 ? 'Current Plan Only' : (s.achievable ? 'Achievable With Added Resource' : 'Still Gap Remaining');
+  const statusCls = forecastPlanRows.length === 0 ? 'amber' : (s.achievable ? 'green' : 'red');
+
+  document.getElementById('forecastPlanningContent').innerHTML = `
+    <section class="grid planning-clean-page">
+      <div class="planning-clean-top">
+        <div class="card panel">
+          <div class="section-title"><h2>Forecast Planning</h2><span>Current plan + additional engineers</span></div>
+          <div class="planning-clean-metrics">
+            <div class="metric ${statusCls}"><small>Planning Status</small><strong>${status}</strong><span>Against 30 Sep deadline</span></div>
+            <div class="metric cyan"><small>Current Actual Rate</small><strong>${rateText(s.currentRate)}</strong><span>Existing team productivity</span></div>
+            <div class="metric purple"><small>Avg Additional Output</small><strong>${rateText(s.avgAdditional)}</strong><span>From added engineer lines</span></div>
+            <div class="metric green"><small>Combined Planned Rate</small><strong>${rateText(s.avgCombined)}</strong><span>Current rate + additional output</span></div>
+            <div class="metric amber"><small>Required Daily Rate</small><strong>${rateText(f.requiredDailyRate)}</strong><span>To meet deadline</span></div>
+            <div class="metric red"><small>Balance on Deadline</small><strong>${fmt(s.remainingAtDeadline)}</strong><span>Projected remaining after added resources</span></div>
+          </div>
+        </div>
+
+        <div class="card panel">
+          <div class="section-title"><h2>Additional Engineer Inputs</h2><span>One line = one additional engineer/resource</span></div>
+          <div class="table-wrap plan-table clean-plan-table">
+            <table>
+              <thead><tr><th>From Date</th><th>To Date</th><th>Per Day Estimation</th><th>Remove</th></tr></thead>
+              <tbody>
+                ${forecastPlanRows.length ? forecastPlanRows.map((r,i)=>`<tr>
+                  <td><input type="date" value="${esc(r.from||'')}" onchange="updatePlanRow(${i},'from',this.value)"></td>
+                  <td><input type="date" value="${esc(r.to||'')}" onchange="updatePlanRow(${i},'to',this.value)"></td>
+                  <td><input class="small-input" type="number" min="0" value="${Number(r.perDay)||0}" onchange="updatePlanRow(${i},'perDay',this.value)"></td>
+                  <td><button class="btn-ghost btn-small" onclick="deletePlanRow(${i})">Remove</button></td>
+                </tr>`).join('') : `<tr><td colspan="4" style="color:#94a3b8;text-align:center;padding:18px;">Current plan is used by default. Add engineer lines only for additional future resource/output.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+          <button class="btn-primary btn-small" style="margin-top:10px;" onclick="addPlanRow()">+ Add Additional Engineer Line</button>
+        </div>
+      </div>
+
+      <div class="planning-chart-grid">
+        <div class="card panel">
+          <div class="section-title"><h2>Forecast Scenario to Deadline</h2><span>Actual + current rate + additional resource plan</span></div>
+          <div id="planningForecastLine" class="chart planning-chart"></div>
+        </div>
+        <div class="card panel">
+          <div class="section-title"><h2>Daily Rate Scenario</h2><span>Current actual rate plus additional output</span></div>
+          <div id="planningDailyLine" class="chart planning-chart"></div>
+        </div>
+      </div>
+    </section>`;
+
+  const scenarioFull = (f.dates || []).map(d=>{
+    if(f.latestDate && d <= f.latestDate){
+      const idx = (f.dates || []).indexOf(d);
+      return (f.actualCumulative || [])[idx] ?? null;
+    }
+    const idx = s.futureDates.indexOf(d);
+    return idx >= 0 ? s.plannedCumulative[idx] : null;
+  });
+
+  lineChart('planningForecastLine', f.dates || [], [
+    {name:'Actual completed', values:f.actualCumulative || [], color:'#22d3ee'},
+    {name:'Required path', values:f.targetCumulative || [], color:'#fbbf24'},
+    {name:'Current plan', values:f.projectedCumulative || [], color:'#a78bfa'},
+    {name:'With additional engineers', values:scenarioFull, color:'#34d399'}
+  ], {showEveryDate:true, legend:true, compact:true});
+
+  lineChart('planningDailyLine', s.futureDates, [
+    {name:'Current actual rate', values:s.currentLine, color:'#22d3ee'},
+    {name:'Additional output', values:s.additionalDaily, color:'#a78bfa'},
+    {name:'Combined planned rate', values:s.combinedDaily, color:'#34d399'},
+    {name:'Required daily rate', values:s.requiredLine, color:'#fbbf24'}
+  ], {showEveryDate:true, legend:true, compact:true});
+}
+
+function renderTasks(){const rows=dashboardData.recentTasks;document.getElementById('taskContent').innerHTML=`<section class="grid">${kpiCards()}<div class="card panel"><div class="section-title"><h2>Recent Completed Tasks</h2><span>Latest 200 completed products</span></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Product Code</th><th>Engineer</th><th>Status</th><th>ABC</th><th>Product Manager</th><th>Category</th><th>Class</th><th>Stock Group</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.code)}</td><td>${esc(r.engineer)}</td><td><span class="status-pill status-ok">${esc(r.status)}</span></td><td>${esc(r.abc)}</td><td>${esc(r.pm)}</td><td>${esc(r.category)}</td><td>${esc(r.class)}</td><td>${esc(r.stockGroup)}</td></tr>`).join('')}</tbody></table></div></div></section>`;}
+function categoryTreeTable(rows){return `<div class="table-wrap"><table><thead><tr><th>Category / Class / Stock Group</th><th>Total</th><th>Completed</th><th>Remaining</th><th>%</th><th>Progress</th></tr></thead><tbody>${rows.map((cat,ci)=>{const catId=`cat-${ci}`;let html=`<tr class="tree-cat"><td><button class="tree-toggle" onclick="toggleCategory('${catId}')">+</button> <strong>${esc(cat.name)}</strong></td><td>${fmt(cat.total)}</td><td>${fmt(cat.completed)}</td><td>${fmt(cat.remaining)}</td><td>${pct(cat.pct)}</td><td class="progress-cell"><div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100,cat.pct)}%"></div></div></td></tr>`;(cat.classes||[]).forEach((cl,li)=>{const classId=`class-${ci}-${li}`;html+=`<tr class="tree-child hidden-row tree-class" data-cat="${catId}" data-level="class"><td class="tree-name-class"><button class="tree-toggle" onclick="toggleClass('${classId}')">+</button> ${esc(cl.name)}</td><td>${fmt(cl.total)}</td><td>${fmt(cl.completed)}</td><td>${fmt(cl.remaining)}</td><td>${pct(cl.pct)}</td><td class="progress-cell"><div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100,cl.pct)}%"></div></div></td></tr>`;(cl.stockGroups||[]).forEach(sg=>{html+=`<tr class="tree-child hidden-row tree-stock" data-cat="${catId}" data-class="${classId}" data-level="stock"><td class="tree-name-stock">${esc(sg.name)}</td><td>${fmt(sg.total)}</td><td>${fmt(sg.completed)}</td><td>${fmt(sg.remaining)}</td><td>${pct(sg.pct)}</td><td class="progress-cell"><div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100,sg.pct)}%"></div></div></td></tr>`;});});return html;}).join('')}</tbody></table></div>`}
+function toggleCategory(id){const classRows=[...document.querySelectorAll(`[data-cat="${id}"][data-level="class"]`)];const willShow=classRows.some(r=>r.classList.contains('hidden-row'));classRows.forEach(r=>r.classList.toggle('hidden-row',!willShow));if(!willShow){document.querySelectorAll(`[data-cat="${id}"][data-level="stock"]`).forEach(r=>r.classList.add('hidden-row'));}}
+function toggleClass(id){const rows=[...document.querySelectorAll(`[data-class="${id}"]`)];const willShow=rows.some(r=>r.classList.contains('hidden-row'));rows.forEach(r=>r.classList.toggle('hidden-row',!willShow));}
+function tableProgress(rows,label,limit=50){rows=[...rows].slice(0,limit);return `<div class="table-wrap"><table><thead><tr><th>${label}</th><th>Total</th><th>Completed</th><th>Remaining</th><th>%</th><th>Progress</th></tr></thead><tbody>${rows.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td>${fmt(r.total)}</td><td>${fmt(r.completed)}</td><td>${fmt(r.remaining)}</td><td>${pct(r.pct)}</td><td class="progress-cell"><div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100,r.pct)}%"></div></div></td></tr>`).join('')}</tbody></table></div>`}
+function setDonut(id,p){const el=document.getElementById(id);if(el)el.style.background=`conic-gradient(var(--ipd) 0 ${p}%, rgba(239,68,68,.86) ${p}% 100%)`;}
+function svgEl(tag,attrs={}){const e=document.createElementNS('http://www.w3.org/2000/svg',tag);Object.entries(attrs).forEach(([k,v])=>e.setAttribute(k,v));return e;}
+function lineChart(id,labels,series,opts={}){
+  const el=document.getElementById(id);
+  if(!el)return;
+  el.innerHTML='';
+
+  if(opts.legend){
+    const leg=document.createElement('div');
+    leg.className='legend';
+    series.forEach(s=>{
+      const item=document.createElement('span');
+      item.className='legend-item';
+      item.innerHTML=`<i class="legend-dot" style="background:${s.color}"></i>${esc(s.name)}`;
+      leg.appendChild(item);
+    });
+    el.appendChild(leg);
+  }
+
+  // Safer chart function with reduced spacing between date labels.
+  // Keeps every working day visible, but avoids very wide horizontal scrolling.
+  const xStep = opts.compact ? 12 : 46;
+  const w = opts.compact
+    ? (el.clientWidth || 700)
+    : Math.max(el.clientWidth || 700, Math.max(1, labels.length) * xStep);
+
+  const h = (el.clientHeight || 300) - (opts.legend ? 24 : 0);
+  const padL = opts.compact ? 48 : 36;
+  const padR = opts.compact ? 28 : 8;
+  const padT = 18;
+  const padB = opts.compact ? 44 : 54;
+
+  const svg=svgEl('svg',{width:w,height:h,viewBox:`0 0 ${w} ${h}`});
+  const all=series.flatMap(s=>s.values).filter(v=>v!==null&&v!==undefined&&!Number.isNaN(Number(v))).map(Number);
+  const max=Math.max(1,...all);
+
+  for(let i=0;i<5;i++){
+    const y=padT+(h-padT-padB)*i/4;
+    svg.appendChild(svgEl('line',{x1:padL,y1:y,x2:w-padR,y2:y,stroke:'#172033','stroke-width':1}));
+    const val=max-(max*i/4);
+    svg.appendChild(svgEl('text',{x:8,y:y+4,fill:'#94a3b8','font-size':10})).textContent=fmt(val);
+  }
+
+  labels.forEach((lab,i)=>{
+    const x=padL+(w-padL-padR)*(labels.length<=1?0:i/Math.max(1,labels.length-1));
+    svg.appendChild(svgEl('line',{x1:x,y1:padT,x2:x,y2:h-padB,stroke:'#0f172a','stroke-width':1}));
+    const fontSize=opts.compact?7:9;
+    const txY=opts.compact?h-20:h-30;
+    const tx=svgEl('text',{x:x,y:txY,fill:'#94a3b8','font-size':fontSize,'text-anchor':'end',transform:`rotate(-45 ${x} ${txY})`});
+    tx.textContent=dateShort(lab);
+    svg.appendChild(tx);
+  });
+
+  series.forEach(s=>{
+    let seg=[];
+    const drawSeg=()=>{
+      if(seg.length>1)svg.appendChild(svgEl('polyline',{points:seg.join(' '),fill:'none',stroke:s.color,'stroke-width':3,'stroke-linecap':'round','stroke-linejoin':'round'}));
+      seg=[];
+    };
+    s.values.forEach((v,i)=>{
+      if(v===null||v===undefined||Number.isNaN(Number(v))){
+        drawSeg();
+        return;
+      }
+      const x=padL+(w-padL-padR)*(labels.length<=1?0:i/Math.max(1,labels.length-1));
+      const y=h-padB-(h-padT-padB)*(Number(v)/max);
+      seg.push(`${x},${y}`);
+      svg.appendChild(svgEl('circle',{cx:x,cy:y,r:3.3,fill:s.color}));
+    });
+    drawSeg();
+  });
+
+  el.appendChild(svg);
+}
+function barChart(id,labels,values,color){const el=document.getElementById(id);if(!el)return;el.innerHTML='';const w=Math.max(el.clientWidth||700,labels.length*90),h=el.clientHeight||300,pad=45;const svg=svgEl('svg',{width:w,height:h,viewBox:`0 0 ${w} ${h}`});const max=Math.max(1,...values);const barW=(w-pad*2)/Math.max(1,values.length)*.55;values.forEach((v,i)=>{const x=pad+(w-pad*2)*(i+.22)/values.length;const bh=(h-pad*2)*(v/max);const y=h-pad-bh;svg.appendChild(svgEl('rect',{x,y,width:barW,height:bh,rx:8,fill:color}));svg.appendChild(svgEl('text',{x:x+barW/2,y:y-6,fill:'#cbd5e1','font-size':11,'text-anchor':'middle'})).textContent=fmt(v);svg.appendChild(svgEl('text',{x:x+barW/2,y:h-16,fill:'#94a3b8','font-size':10,'text-anchor':'middle'})).textContent=labels[i];});el.appendChild(svg);}
+loadData();
+
+setActiveNav('summaryPage');
+</script>
+</body>
+</html>
