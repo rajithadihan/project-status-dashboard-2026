@@ -23,7 +23,7 @@ from xml.etree import ElementTree as ET
 BASE_DIR = Path(__file__).resolve().parent
 EXCEL_FILE = BASE_DIR / "Project-status.xlsx"
 PORT = int(os.environ.get("IPD_DASHBOARD_PORT", "8765"))
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PROJECT_DEADLINE = "2026-09-30"
 HOLIDAYS_2026 = {
     "2026-01-03", "2026-01-15", "2026-02-01", "2026-02-04", "2026-03-02", "2026-04-01",
