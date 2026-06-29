@@ -692,7 +692,7 @@ def main():
     url = f"http://{HOST}:{PORT}/"
     print(f"Opening: {url}")
     server = ThreadingHTTPServer((HOST, PORT), DashboardHandler)
-    webbrowser.open(url)
+   
     try:
         server.serve_forever()
     except KeyboardInterrupt:
